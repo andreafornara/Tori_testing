@@ -8,6 +8,7 @@
                                          and the resonance lines, and where they are in the amplitude plane (PNG)
     resonance_lines(result, path)        4D tori: the resonances as lines with their name on them, coloured by their
                                          strength on one scale (PNG)
+    tori_2d(result, path)                x tori: the tori in phase space, rebuilt from their spectra (PNG)
 Every figure takes method='spectra' or 'tunes': how the resonances of the 4D tori are found (detect.py).
 A resonance n.Q = p keeps one colour in all the figures of a result. Its resonant harmonics in plane a are m = e_a + k n:
 their frequency differs from the linear one by k (n.Q - p), which vanishes on the resonance. Every torus is one marker
@@ -567,6 +568,25 @@ def resonance_lines(result, path, method='spectra'):
     fig.colorbar(matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap), ax=right, location='bottom', shrink=.7,
                  label=r'$\dfrac{\sum\ |c^{\,x}_{m_x,m_y}|^2 + |c^{\,y}_{m_x,m_y}|^2\quad (|m_x| > 1\ \mathrm{or}\ |m_y| > 1)}{\sum\ |c^{\,x}_{m_x,m_y}|^2 + |c^{\,y}_{m_x,m_y}|^2\quad (|m_x|, |m_y| \leq 1)}$'
                        '\n' r'top: the harmonics of the line, $(m_x - 1, m_y)$ for $c^{\,x}$ and $(m_x, m_y - 1)$ for $c^{\,y}$ equal to $k\,(n_x, n_y)$')
+    fig.savefig(path, dpi=170)
+    plt.close(fig)
+
+
+def tori_2d(result, path):
+    """x tori (one angle): every torus in phase space, x = Re z and p = -Im z with z = sum_m c[m] e^{i m theta}, coloured
+    by its amplitude; the tori that did not converge in red, with their best approximation."""
+    keep = np.isfinite(result['residual'])
+    (Bx, By), _ = grid(result['c'])
+    z = result['c'][keep, 0, :, By]@np.exp(1j*np.outer(np.arange(-Bx, Bx+1), 2*np.pi*np.arange(513)/512))
+    r = result['r'][keep, 0]
+    norm = plt.Normalize(0, r.max())
+    colors = plt.get_cmap('viridis')(norm(r))
+    colors[~result['converged'][keep]] = (1, 0, 0, 1)
+    fig, ax = plt.subplots(figsize=(8, 7), layout='constrained')
+    ax.add_collection(LineCollection(np.stack([z.real, -z.imag], axis=-1), colors=colors, linewidths=.5))
+    ax.autoscale()
+    ax.set(aspect='equal', xlabel=f'$x${unit(result)}', ylabel=f'$p_x${unit(result)}', title=job(result))
+    fig.colorbar(plt.cm.ScalarMappable(norm, 'viridis'), ax=ax, label=f'amplitude $r${unit(result)}')
     fig.savefig(path, dpi=170)
     plt.close(fig)
 

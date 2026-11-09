@@ -9,6 +9,7 @@ xobjects==0.6.3
 xdeps==0.10.17
 xtrack==0.104.3
 xpart==0.23.12
+ipykernel==7.2.0           # the # %% cells of examples/
 xfields==0.25.18           # required by xmask
 # only for lattices/lhc/build_lhc_top.py
 xmask==0.5.3

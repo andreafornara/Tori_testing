@@ -6,7 +6,7 @@
 #   GPU=3 bash install_python.sh ...       GPU of the smoke test (nvidia-smi numbering, default 2)
 #
 # Touches nothing outside PREFIX (no ~/.bashrc, no conda init, no other environment).
-# Use afterwards:  PREFIX/bin/python examples/launch_henon.py   (or: export PATH=PREFIX/bin:$PATH)
+# Use afterwards, from examples/:  PREFIX/bin/python henon_2d.py   (or: export PATH=PREFIX/bin:$PATH)
 set -euo pipefail
 
 MINIFORGE_VERSION=26.9.4-1

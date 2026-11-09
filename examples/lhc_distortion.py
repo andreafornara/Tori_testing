@@ -1,24 +1,52 @@
-"""Compare lattices by the nonlinear distortion D of their tori (see tori/distortion.py), as a function of the action.
-Usage (from the repository root): python examples/compare_distortion.py results/lhc_top_b1_oct0_6sigma ...
-Writes results/distortion_comparison.png and prints the ranking."""
-import re
+"""Bonus: the LHC tori for a loop over the octupole currents, then the lattices compared by the nonlinear distortion D of
+their tori (tori_functions/distortion.py). Run the # %% cells one by one, or the whole file from this folder."""
+
+# %% Decide the octupole currents and which tori to track
+import subprocess
 import sys
+sys.path.insert(0, '..')
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from tori.distortion import distortion, spectral_actions
+from IPython.display import Image
+from tori_functions import load, launch_tori
+from tori_functions.distortion import distortion, spectral_actions
 
-AMPLITUDES = [1, 2, 4, 6]      # sigma: where the lattices are ranked
-OUT = Path('results/distortion_comparison.png')
+CURRENTS = [0, 50, 100, 150, 200, 250, 300]     # octupole currents [A]
+DEVICE = 2                                      # GPU (1, 2 or 3)
+RAYS = 50
+TORI_PER_RAY = 20
+SIGMA = 6                                       # largest amplitude per plane [sigma]
+ANGLES = 41                                     # angles per plane (odd)
+AMPLITUDES = [1, 2, 4, 6]                       # sigma: where the lattices are ranked
+OUT = Path('../results/distortion_comparison.png')
 
-# one entry per lattice, ordered by octupole current
+
+def line_file(current):
+    return Path(f'../lattices/lhc/lhc_top_b1_oct{current}.json')
+
+
+def tori_file(current):
+    return Path(f'../results/lhc_top_b1_oct{current}_{SIGMA}sigma/tori.npz')
+
+
+# %% Build the lines still missing, from the 0 A line (CPU, about 40 s each)
+missing = [str(current) for current in CURRENTS if not line_file(current).exists()]
+subprocess.run([sys.executable, '../lattices/lhc/set_octupoles.py', *missing], check=True)
+
+# %% Retrieve the invariant tori of every current and save them
+J = SIGMA**2/2                                  # r = sqrt(2 J) = sigma
+for current in CURRENTS:
+    the_map = load(line_file(current), device=DEVICE, nemitt=2.5e-6, start='bptdv.a4l1.b1')
+    result = launch_tori(the_map, TORI_PER_RAY, ANGLES, max_jx=J, max_jy=J, layout='fan', n_rays=RAYS)
+    tori_file(current).parent.mkdir(parents=True, exist_ok=True)
+    np.savez(tori_file(current), **result)
+    print(f'{current} A: {result["converged"].sum()}/{len(result["r"])} converged, {result["seconds"]:.0f} s', flush=True)
+
+# %% Postprocess: D of every torus, from the saved tori (the cells above can be skipped)
 lattices = []
-for folder in sys.argv[1:]:
-    result = dict(np.load(Path(folder)/'tori.npz'))
-    current = float(re.search(r'oct(-?[\d.]+)', str(result['line'])).group(1))
+for current in CURRENTS:
+    result = dict(np.load(tori_file(current)))
     D = distortion(result)
     rho = np.round(np.hypot(*result['r'].T), 6)             # the amplitude levels of the fan, shared by all rays
     levels = np.unique(rho)
@@ -27,8 +55,8 @@ for folder in sys.argv[1:]:
                          mean=np.array([np.nanmean(D[rho == v]) for v in levels]),
                          low=np.array([np.nanmin(D[rho == v]) for v in levels]),
                          high=np.array([np.nanmax(D[rho == v]) for v in levels])))
-    print(f'{current:g} A: {result["converged"].sum()}/{len(D)} converged')
-lattices.sort(key=lambda l: l['current'])
+
+# %% Figure: distortion against the action, ranking, axes and diagonal, maps
 colors = plt.cm.viridis(np.linspace(0, .85, len(lattices)))
 action_label = r'action $I_x + I_y$ [$\sigma^2$]'
 
@@ -94,4 +122,5 @@ ax.legend(loc='upper right', frameon=False)
 fig.suptitle(r'nonlinear distortion of the tori: $D = \sum_{|m_x| > 1\ \mathrm{or}\ |m_y| > 1} |c_m|^2\ /\ \sum_{|m_x|, |m_y| \leq 1} |c_m|^2$,'
              r'  $I_k = \frac{1}{2}\sum_m m_k |c_m|^2$', fontsize=13, y=.95)
 fig.savefig(OUT, dpi=110, bbox_inches='tight')
-print(OUT)
+plt.close(fig)
+Image(OUT)

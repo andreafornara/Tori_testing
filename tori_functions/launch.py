@@ -15,7 +15,7 @@ the one with the lowest residual; it stays converged = False (the figures cross 
 
 A torus that does not converge tells which resonance stopped it (record): the map is applied once to the torus, and the
 error of every harmonic, divided by its small divisor, is the largest on the harmonics linear harmonic +- n of a line
-n.Q = p. Around these tori a swarm of new tori (launch_swarm) crosses that line at several places along it.
+n.Q = p.
 """
 import time
 from math import gcd
@@ -26,13 +26,9 @@ AT_ROUNDOFF = dict(tolerance=3e-15)                 # a map exact to double prec
 TRACKED = dict(tolerance=5e-12, chord=True, resonance=1e-5, steps=10, circle_tunes=True)    # a tracked lattice
 CHUNK = 500                     # tori per Newton call
 RETRY = (2, 40)                 # the retry: 2 x the angles, 40 Newton steps
-STATIONS = 5                    # swarm: the places along a resonance line
-ALONG = .1                      # swarm: their distance along the line [sigma]
-ACROSS = np.geomspace(1e-5, 2e-3, 8)    # swarm: the distances |n.Q - p| from the line, on each side of it
-NEAREST = 8                     # swarm: the converged tori that give the local slope of n.Q
 
 
-def launch_tori(the_map, n_tori, n_frequencies, max_jx, max_jy=0., layout='diagonal', n_rays=7, log=print, swarm=True):
+def launch_tori(the_map, n_tori, n_frequencies, max_jx, max_jy=0., layout='diagonal', n_rays=7, log=print):
     """The tori and their spectra, a dict of arrays (np.savez(path, **result)):
         J, r      (tori, 2) actions and amplitudes sqrt(2J) (sigma)
         ray, phi  (tori,) the ray of every torus (-1: none, grid) and its angle atan(r_y / r_x) in degrees
@@ -41,7 +37,7 @@ def launch_tori(the_map, n_tori, n_frequencies, max_jx, max_jy=0., layout='diago
         residual  (tori,) the largest Newton residual; converged: below 100 x the tolerance
         angles    (tori,) the angles per plane of the solution kept; seconds: the time taken
     and, for the tori not converged: first_* (the attempt before the retry), failed, error, lost, failed_line, distance (see
-    record), swarm_* (see launch_swarm)."""
+    record)."""
     assert n_frequencies % 2 == 1, 'n_frequencies must be odd'
     # The amplitudes of the tori
     R = np.sqrt(2*np.array([max_jx, max_jy], dtype=float))
@@ -76,8 +72,6 @@ def launch_tori(the_map, n_tori, n_frequencies, max_jx, max_jy=0., layout='diago
     clock = time.perf_counter()
     record(the_map, result)
     result['record_seconds'] = time.perf_counter()-clock
-    if swarm:
-        launch_swarm(the_map, result, settings, log)
     return result
 
 
@@ -173,44 +167,3 @@ def record(the_map, result):
         result['error'], result['lost'] = error_spectra(the_map, result['c'][failed], result['Q'][failed], points)
         result['failed_line'] = np.array([named_line(Q, E) for Q, E in zip(result['Q'][failed], result['error'])])
         result['distance'] = np.sum(result['Q'][failed]*result['failed_line'][:, :2], axis=1)-result['failed_line'][:, 2]
-
-
-def launch_swarm(the_map, result, settings, log=print):
-    """A swarm of new tori around the resonance lines named by the tori not converged, added to the result as swarm_*
-    (J, r, c, Q, residual, converged and the keys of record, then w: the line, station: the place along it, target: the
-    n.Q - p aimed at). Every line gets STATIONS places along it, and at every place 17 tori:
-    the place itself and ACROSS on both sides of the line. Same solver and settings as the tori; no retry, no second swarm."""
-    clock = time.perf_counter()
-    J, r, Q = result['J'], result['r'], result['Q']
-    good = np.flatnonzero(result['converged'] & np.all(J > 0, axis=1))
-    rows, station = [], 0
-    for w in (np.unique(result['failed_line'], axis=0) if len(result['failed']) else []):
-        anchors = result['failed'][np.all(result['failed_line'] == w, axis=1)]
-        anchors = anchors[np.argsort(np.hypot(*r[anchors].T))]              # the failed tori of this line, by amplitude
-        anchors = anchors[np.unique(np.linspace(0, len(anchors)-1, STATIONS).round().astype(int))]
-        side = (STATIONS//len(anchors))//2                                  # few failed tori: more places along the line
-        for t in anchors:
-            # n.Q - p around torus t: a plane through the nearest converged tori, slope in the actions and value at t
-            near = good[np.argsort(np.linalg.norm(r[good]-r[t], axis=1))[:NEAREST]]
-            *slope, value = np.linalg.lstsq(np.c_[J[near]-J[t], np.ones(NEAREST)], Q[near]@w[:2]-w[2], rcond=None)[0]
-            slope = np.array(slope)
-            along = np.array([-slope[1], slope[0]])/np.hypot(*slope)        # the direction of the line in the actions
-            for k in range(-side, side+1):
-                place = J[t]+k*ALONG*np.hypot(*r[t])*along                  # dJ = r dr
-                for target in (value, *ACROSS, *-ACROSS):
-                    rows.append((*(place+(target-value)*slope/(slope@slope)), *w, station, target))
-                station += 1
-    rows = np.array(rows).reshape(-1, 7)
-    rows = rows[np.all(rows[:, :2] > 0, axis=1)]
-    n = len(rows)
-    swarm = dict(J=rows[:, :2], r=np.sqrt(2*rows[:, :2]), band=result['band'], Q=np.full((n, 2), np.nan),
-                 c=np.zeros((n,)+result['c'].shape[1:], complex), residual=np.full(n, np.inf), angles=np.zeros(n, int),
-                 w=rows[:, 2:5].astype(int), station=rows[:, 5].astype(int), target=rows[:, 6])
-    if n:
-        solve(the_map, swarm, np.arange(n), 2*int(np.max(result['band']))+1, settings)
-    swarm['converged'] = swarm['residual'] < 100*settings['tolerance']
-    record(the_map, swarm)
-    result.update({f'swarm_{key}': value for key, value in swarm.items() if key != 'band'})
-    result['swarm_seconds'] = time.perf_counter()-clock
-    log(f'swarm: {n} tori around {station and len(np.unique(swarm["w"], axis=0))} lines, {swarm["converged"].sum()} converged, '
-        f'in {result["swarm_seconds"]:.0f} s')
