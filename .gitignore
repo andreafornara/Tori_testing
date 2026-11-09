@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.cache/
+results/
+*.npz
+*.png
+*.pdf
+*.log
+# compiled Xsuite kernels
+lattices/**/*.c
+lattices/**/*.so
+lattices/lhc/lhc_top_b1_oct*.json
+!lattices/lhc/lhc_top_b1_oct0.json
+python/
+logs/
