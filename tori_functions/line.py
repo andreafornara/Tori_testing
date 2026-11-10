@@ -9,7 +9,7 @@ r = sqrt(2J) is the amplitude in beam sigmas. nemitt=None: emittance 1 (the Hén
 The longitudinal plane is frozen (delta = 0): the map is 4D.
 
     the_map.one_turn(x, px, y, py) -> (x, px, y, py)     CuPy arrays of any shape; NaN for a lost particle
-    the_map.jacobian(x, px, y, py) -> A[i][k]            central differences of one_turn, step STEP sigma
+    the_map.jacobian(x, px, y, py) -> A[i][k]            the derivative of one_turn: central differences, step STEP sigma
     the_map.tunes, the_map.noise (round-off of the map), the_map.device, the_map.info
 """
 import os

@@ -2,6 +2,7 @@
 
 The map comes as two functions of the normalized coordinates (x, px, y, py):
     one_turn(x, px, y, py) -> (x, px, y, py)        jacobian(x, px, y, py) -> A[i][k] = d(output i)/d(input k)
+A is the derivative of the map (its jacobian matrix) everywhere in this file.
 A torus is sampled on N angles per plane:
     K[t, c, i, j]        coordinate c (x, px, y, py) of torus t at the angles (2 pi i/N, 2 pi j/N)
     Q[t, a], J[t, a]     its tunes and its actions
@@ -118,14 +119,29 @@ def apply(one_turn, K):
     return cp.stack(one_turn(*cp.moveaxis(K, 1, 0)), axis=1)
 
 
-def map_derivative(jacobian, K):
-    """The derivative of the map at every grid point, shape (tori, 4, 4, N, ..., N)."""
-    rows = jacobian(*cp.moveaxis(K, 1, 0))
-    A = cp.empty((len(K), 4, 4)+K.shape[2:])
-    for i, row in enumerate(rows):
-        for k, value in enumerate(row):
-            A[:, i, k] = value
-    return A
+STEP = 1e-3                     # finite-difference step of the map derivative, in the units of K
+
+
+def map_derivative(one_turn, K, mapped):
+    """A: the derivative of the map (jacobian matrix) at every grid point, shape (tori, 4, 4, N, ..., N), given
+    mapped = one_turn(K). Along the torus it is free: A dK/dtheta_a = d(mapped)/dtheta_a. Across, 4 - D directions by
+    central differences of the map (2 calls each): the angle directions turned by 90 degrees in each plane, and the
+    planes at rest. (Forward differences, 1 call each, are only 1e-3 accurate: Newton at round-off needs 2x the steps.)"""
+    D = K.ndim-2
+    along = [derivative(K, a) for a in range(D)]
+    across = [cp.stack([t[:, 1], -t[:, 0], t[:, 3], -t[:, 2]], axis=1) for t in along]
+    for c in range(2*D, 4):                                         # D = 1: y and py, at rest
+        e = cp.zeros_like(K)
+        e[:, c] = 1
+        across.append(e)
+    across = [n/cp.sqrt(cp.sum(n**2, axis=1, keepdims=True)) for n in across]
+    shifted = apply(one_turn, cp.concatenate([K+s*STEP*n for n in across for s in (1, -1)]))   # one map call for all
+    parts = cp.split(shifted, 2*len(across))                        # K + h n, K - h n, for every direction n
+    images = [derivative(mapped, a) for a in range(D)]+[(parts[2*i]-parts[2*i+1])/(2*STEP) for i in range(len(across))]
+    # A C = B at every grid point, C: the 4 directions as columns, B: their images. Solved as C^T A^T = B^T.
+    C, B = [cp.moveaxis(cp.stack(v, axis=-1), 1, -2) for v in (along+across, images)]   # (tori, grid, 4, 4)
+    A = cp.linalg.solve(cp.swapaxes(C, -1, -2), cp.swapaxes(B, -1, -2))
+    return cp.moveaxis(cp.swapaxes(A, -1, -2), (-2, -1), (1, 2))
 
 
 def equations(mapped, K, Q, J):
@@ -159,7 +175,7 @@ def newton_step(A, K, Q, invariance, conditions, rest_tunes, tolerance, max_iter
     """The Newton correction (dK, dQ) of every torus: the least-squares solution of the linearised equations
         A(theta) dK(theta) - dK(theta + 2 pi Q) - 2 pi dQ . dK/dtheta(theta + 2 pi Q) = -invariance
         (the linearised conditions)                                                    = -conditions
-    with A the map derivative on the torus, by conjugate gradients on the normal equations (CGLS), every torus
+    with A(theta) the derivative of the map (jacobian matrix) at the torus point K(theta), by conjugate gradients on the normal equations (CGLS), every torus
     with its own step lengths. The matrix is never stored: it is applied (forward) and transposed.
     Preconditioner: the inverse of the same equations for a pure rotation; it multiplies mode m of plane a by
     1 / (exp(-2 pi i Q_a) - exp(2 pi i m.Q)), at most 1/floor (the small divisors of nearby resonances), and by 1 for
@@ -329,9 +345,12 @@ def solve_tori(one_turn, jacobian, J, points, tolerance, steps=30, inner_toleran
     """The invariant tori with the actions J (tori, D), on `points` angles per plane (odd), all solved together from
     the circles of the linear map. Returns K, Q and the final residual of every torus (NaN: a lost particle).
     Every Newton step: the linearised equations of the tori not converged yet (newton_step), the new torus rescaled
-    to the actions J (on_actions), then the step halved until the residual decreases (line search). A torus is
+    to the actions J (on_actions), then the step halved until the residual decreases (line search; no halving below
+    100 x tolerance, where the residual is at the noise of the map). A torus is
     converged below `tolerance`; one whose residual no step decreases any more (or with a lost particle) stops there.
-    chord: the map derivative is computed again only when a step reduces the largest residual less than 10 times.
+    chord: the map derivative of a torus is computed again only when a step reduces its residual less than 10 times
+    and it is still above 100 x tolerance (not converged yet); below, the old derivative is good enough. A torus that
+    no step decreases with an old derivative gets a new one before it stops.
     circle_tunes: start from the tunes of the circles themselves (their mean phase advance under the map) instead of
     the linear tunes, which can be far from the tunes of the tori when the detuning is large."""
     J = cp.asarray(J, dtype=float)
@@ -345,21 +364,25 @@ def solve_tori(one_turn, jacobian, J, points, tolerance, steps=30, inner_toleran
         z, image = K[:, 0:2*D:2]-1j*K[:, 1:2*D:2], mapped[:, 0:2*D:2]-1j*mapped[:, 1:2*D:2]
         turn = image/(z*cp.exp(2j*cp.pi*Q).reshape(Q.shape+(1,)*D))
         Q = Q+cp.mean(cp.angle(turn).reshape(len(K), D, -1), axis=-1)/(2*cp.pi)
-    residuals = []                                      # the largest residual at every step
+    previous = cp.full(len(J), cp.inf)                  # the residual of every torus at the step before
     for step in range(steps+1):
         invariance, conditions = equations(mapped, K, Q, J)
         largest = cp.maximum(cp.max(cp.abs(invariance).reshape(len(K), -1), axis=1), cp.max(cp.abs(conditions), axis=1))
         todo = cp.flatnonzero((largest >= tolerance) & ~floor_reached)       # NaN (lost) is never >= tolerance
         if len(todo) == 0 or step == steps:
             break
-        residuals.append(float(cp.max(largest[cp.isfinite(largest)])))
         k, q, j = K[todo], Q[todo], J[todo]
-        if step == 0:
-            A = map_derivative(jacobian, K if chord else k)
+        fresh = cp.full(len(J), step == 0 or not chord)  # the tori whose derivative is computed at this step
+        if chord and step == 0:
+            A = map_derivative(one_turn, K, mapped)
         elif not chord:
-            A = map_derivative(jacobian, k)
-        elif residuals[-1] > .1*residuals[-2]:           # chord: the derivative again only when a step did little
-            A[todo] = map_derivative(jacobian, k)
+            A = map_derivative(one_turn, k, mapped[todo])
+        else:       # chord: the derivative again only for the tori a step did little for, still above 100 x tolerance
+            slow = todo[(largest[todo] > .1*previous[todo]) & (largest[todo] > 100*tolerance)]
+            if len(slow):
+                A[slow] = map_derivative(one_turn, K[slow], mapped[slow])
+                fresh[slow] = True
+        previous = largest
         dK, dQ = newton_step(A[todo] if chord else A, k, q, invariance[todo], conditions[todo], rest_tunes[todo],
                              inner_tolerance, inner_iterations, floor, resonance)
         dK = on_actions(k+dK, j)-k                      # the step lands exactly on the actions J
@@ -371,17 +394,19 @@ def solve_tori(one_turn, jacobian, J, points, tolerance, steps=30, inner_toleran
         before = length((invariance[todo], conditions[todo]), slice(None))
         alpha, accepted = cp.ones(len(k)), cp.zeros(len(k), dtype=bool)
         trial_mapped = cp.empty_like(k)
+        settled = largest[todo] <= 100*tolerance        # converged already: the full step only, no halving
         for halving in range(16):
-            redo = cp.flatnonzero(~accepted)              # only the tori without a decrease yet are mapped again
+            redo = cp.flatnonzero(~accepted & ~(settled & (halving > 0)))   # the tori without a decrease yet
+            if len(redo) == 0:
+                break
             trial_K = k[redo]+per_torus(alpha[redo], k[redo])*dK[redo]
             trial_Q = q[redo]+per_torus(alpha[redo], q[redo])*dQ[redo]
             trial_mapped[redo] = apply(one_turn, trial_K)
             accepted[redo] = length(equations(trial_mapped[redo], trial_K, trial_Q, j[redo]), redo) < before[redo]
-            if bool(cp.all(accepted)):
-                break
             alpha = cp.where(accepted, alpha, alpha/2)
         alpha = cp.where(accepted, alpha, 0)            # no decrease at all: the torus stays where it is
-        floor_reached[todo] = ~accepted
+        # no decrease: the torus stops, unless its derivative is old and it is not converged (it gets a new one)
+        floor_reached[todo] = ~accepted & (fresh[todo] | (largest[todo] <= 100*tolerance))
         K[todo], Q[todo] = k+per_torus(alpha, k)*dK, q+per_torus(alpha, q)*dQ
         mapped[todo] = cp.where(per_torus(accepted, k), trial_mapped, mapped[todo])
     return K, Q, cp.asnumpy(largest)
